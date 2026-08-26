@@ -48,3 +48,35 @@ def test_marker_overrides_threshold_for_marked_test(pytester):
 
     result.stdout.fnmatch_lines(["*slow tests*", "*test_marked_slow*"])
     result.stdout.no_fnmatch_line("*test_fast*")
+
+
+def test_cpu_bound_slow_test_reports_high_cpu_percentage(pytester):
+    pytester.makepyfile(
+        """
+        import time
+
+        def test_slow_cpu():
+            end = time.time() + 0.2
+            while time.time() < end:
+                pass
+        """
+    )
+
+    result = pytester.runpytest("--slowtrace-threshold=0.1")
+
+    result.stdout.fnmatch_lines(["*slow tests*", "*% cpu*test_slow_cpu*"])
+
+
+def test_io_bound_slow_test_reports_cpu_percentage(pytester):
+    pytester.makepyfile(
+        """
+        import time
+
+        def test_slow_io():
+            time.sleep(0.2)
+        """
+    )
+
+    result = pytester.runpytest("--slowtrace-threshold=0.1")
+
+    result.stdout.fnmatch_lines(["*slow tests*", "*% cpu*test_slow_io*"])
