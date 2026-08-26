@@ -62,7 +62,9 @@ def test_cpu_bound_slow_test_reports_high_cpu_percentage(pytester):
         """
     )
 
-    result = pytester.runpytest("--slowtrace-threshold=0.1")
+    result = pytester.runpytest(
+        "--slowtrace-threshold=0.1", "--slowtrace-idle-threshold=0"
+    )
 
     result.stdout.fnmatch_lines(["*slow tests*", "*% cpu*test_slow_cpu*"])
 
@@ -77,6 +79,44 @@ def test_io_bound_slow_test_reports_cpu_percentage(pytester):
         """
     )
 
-    result = pytester.runpytest("--slowtrace-threshold=0.1")
+    result = pytester.runpytest(
+        "--slowtrace-threshold=0.1", "--slowtrace-idle-threshold=0"
+    )
 
     result.stdout.fnmatch_lines(["*slow tests*", "*% cpu*test_slow_io*"])
+
+
+def test_busy_slow_test_is_not_reported_when_not_idle_enough(pytester):
+    pytester.makepyfile(
+        """
+        import time
+
+        def test_slow_but_busy():
+            end = time.time() + 0.25
+            while time.time() < end:
+                pass
+        """
+    )
+
+    result = pytester.runpytest(
+        "--slowtrace-threshold=0.2", "--slowtrace-idle-threshold=50"
+    )
+
+    assert "slow tests" not in result.stdout.str()
+
+
+def test_idle_slow_test_is_reported_when_idle_enough(pytester):
+    pytester.makepyfile(
+        """
+        import time
+
+        def test_slow_and_idle():
+            time.sleep(0.25)
+        """
+    )
+
+    result = pytester.runpytest(
+        "--slowtrace-threshold=0.2", "--slowtrace-idle-threshold=50"
+    )
+
+    result.stdout.fnmatch_lines(["*slow tests*", "*test_slow_and_idle*"])

@@ -6,8 +6,9 @@ import pytest
 
 
 class SlowTracePlugin:
-    def __init__(self, threshold: float) -> None:
+    def __init__(self, threshold: float, idle_threshold: float) -> None:
         self.threshold = threshold
+        self.idle_threshold = idle_threshold
         self.slow_reports: list[tuple[pytest.TestReport, float | None]] = []
         self.overrides: dict[str, float] = {}
         self.cpu_times: dict[str, float] = {}
@@ -32,9 +33,17 @@ class SlowTracePlugin:
             self.cpu_times[item.nodeid] = time.process_time() - start
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        if report.when != "call":
+            return
         threshold = self.overrides.get(report.nodeid, self.threshold)
-        if report.when == "call" and report.duration >= threshold:
-            self.slow_reports.append((report, self.cpu_times.get(report.nodeid)))
+        if report.duration < threshold:
+            return
+        cpu_time = self.cpu_times.get(report.nodeid)
+        if cpu_time is not None and report.duration > 0:
+            idle_pct = 100 * (1 - cpu_time / report.duration)
+            if idle_pct < self.idle_threshold:
+                return
+        self.slow_reports.append((report, cpu_time))
 
     def pytest_terminal_summary(self, terminalreporter: pytest.TerminalReporter) -> None:
         if not self.slow_reports:
@@ -57,8 +66,19 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption(
         "--slowtrace-threshold",
         type=float,
-        default=1.0,
-        help="Report tests that take longer than this many seconds to run (default: 1.0)",
+        default=0.2,
+        help="Report tests that take longer than this many seconds to run (default: 0.2)",
+    )
+    group.addoption(
+        "--slowtrace-idle-threshold",
+        type=float,
+        default=50.0,
+        help=(
+            "Only report a slow test if it was idle (waiting, not computing) for at "
+            "least this percent of its duration (default: 50.0). A slow test that was "
+            "busy on CPU the whole time isn't worth flagging -- it's doing real work, "
+            "not waiting on something."
+        ),
     )
 
 
@@ -69,4 +89,7 @@ def pytest_configure(config: pytest.Config) -> None:
         "overriding --slowtrace-threshold",
     )
     threshold = config.getoption("--slowtrace-threshold")
-    config.pluginmanager.register(SlowTracePlugin(threshold), "slowtrace-plugin")
+    idle_threshold = config.getoption("--slowtrace-idle-threshold")
+    config.pluginmanager.register(
+        SlowTracePlugin(threshold, idle_threshold), "slowtrace-plugin"
+    )
