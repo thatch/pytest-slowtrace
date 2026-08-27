@@ -18,10 +18,17 @@ _MIN_SAMPLE_INTERVAL = 0.001
 
 
 class SlowTracePlugin:
-    def __init__(self, threshold: float, idle_threshold: float, rootdir: Path) -> None:
+    def __init__(
+        self,
+        threshold: float,
+        idle_threshold: float,
+        rootdir: Path,
+        app_packages: set[str],
+    ) -> None:
         self.threshold = threshold
         self.idle_threshold = idle_threshold
         self.rootdir = rootdir
+        self.app_packages = app_packages
         self.slow_reports: list[pytest.TestReport] = []
         self.overrides: dict[str, float] = {}
         self.skipped: set[str] = set()
@@ -40,18 +47,32 @@ class SlowTracePlugin:
             self.overrides[item.nodeid] = seconds
 
     def _app_frame(self, frame):
-        """Walk outward from `frame` to the first frame under the project's
-        rootdir, skipping over library/stdlib frames along the way.
+        """Walk outward from `frame` to the first frame that counts as "app
+        code", skipping over library/stdlib frames along the way.
 
         A wait buried inside a library (e.g. requests -> urllib3 -> socket)
         samples as a stdlib-internals line that means nothing without more
         context; the caller in app code that made the blocking call is the
         useful line. Falls back to `frame` itself if nothing in the chain
-        lives under rootdir -- the wait might be entirely inside a library.
+        qualifies -- the wait might be entirely inside a library.
+
+        Default test: is this frame's file under config.rootpath? That
+        breaks when a project's own virtualenv is nested inside its repo
+        root (tox's .tox/, uv's .venv/) -- installed third-party packages
+        live under rootdir too, so the very first (innermost) library frame
+        satisfies the check and the walk never reaches real app code.
+        --slowtrace-app-packages sidesteps this: when set, match a frame's
+        top-level module name instead of its path, since a library's
+        __name__ (e.g. "urllib3.connectionpool") doesn't depend on where its
+        files happen to sit on disk.
         """
         node = frame
         while node is not None:
-            if Path(node.f_code.co_filename).is_relative_to(self.rootdir):
+            if self.app_packages:
+                name = node.f_globals.get("__name__", "")
+                if name.split(".", 1)[0] in self.app_packages:
+                    return node
+            elif Path(node.f_code.co_filename).is_relative_to(self.rootdir):
                 return node
             node = node.f_back
         return frame
@@ -178,6 +199,19 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "not waiting on something."
         ),
     )
+    group.addoption(
+        "--slowtrace-app-packages",
+        type=str,
+        default="",
+        help=(
+            "Comma-separated top-level package names to treat as app code when "
+            "picking which frame to report for a slow-and-idle test, matched "
+            "against each frame's __name__ instead of its file path. Use this "
+            "when the project's own virtualenv is nested inside its rootdir "
+            "(e.g. tox's .tox/ or uv's .venv/), which defeats the default "
+            "rootdir-based check. Default: empty, falls back to rootdir."
+        ),
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -192,6 +226,12 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     threshold = config.getoption("--slowtrace-threshold")
     idle_threshold = config.getoption("--slowtrace-idle-threshold")
+    app_packages = {
+        name.strip()
+        for name in config.getoption("--slowtrace-app-packages").split(",")
+        if name.strip()
+    }
     config.pluginmanager.register(
-        SlowTracePlugin(threshold, idle_threshold, config.rootpath), "slowtrace-plugin"
+        SlowTracePlugin(threshold, idle_threshold, config.rootpath, app_packages),
+        "slowtrace-plugin",
     )

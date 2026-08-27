@@ -210,3 +210,41 @@ def test_stack_summary_prefers_app_frame_over_library_frame(pytester, tmp_path_f
 
     result.stdout.fnmatch_lines(["*slow tests*", "*test_calls_into_a_library*"])
     result.stdout.no_fnmatch_line("*waitlib.py*")
+
+
+def test_app_packages_option_finds_app_frame_even_when_library_lives_under_rootdir(
+    pytester,
+):
+    # Simulates a tox/uv-style nested venv: the "library" lives under the
+    # same rootdir as the app package, so the default rootdir-only check
+    # can't tell them apart and picks the innermost (library) frame.
+    myapp = pytester.mkpydir("myapp")
+    (myapp / "worker.py").write_text(
+        "import vendoredlib\n"
+        "\n"
+        "def do_work():\n"
+        "    vendoredlib.wait()\n"
+    )
+    (pytester.path / "vendoredlib.py").write_text(
+        "import time\n"
+        "\n"
+        "def wait():\n"
+        "    time.sleep(0.25)\n"
+    )
+    pytester.makepyfile(
+        """
+        from myapp import worker
+
+        def test_calls_into_a_vendored_library():
+            worker.do_work()
+        """
+    )
+
+    result = pytester.runpytest(
+        "--slowtrace-threshold=0.1",
+        "--slowtrace-idle-threshold=50",
+        "--slowtrace-app-packages=myapp",
+    )
+
+    result.stdout.fnmatch_lines(["*slow tests*", "*worker.py*do_work*"])
+    result.stdout.no_fnmatch_line("*vendoredlib.py*")
