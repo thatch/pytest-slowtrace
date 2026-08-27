@@ -12,6 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Run the test suite: `uv run pytest`
 - Run a single test: `uv run pytest tests/test_plugin.py::test_slow_test_is_reported`
 - Run the plugin against a real test to see its own output: `uv run pytest --slowtrace-threshold=0.1 <path>`
+- Type-check: `uv run ty check`
 
 ## Architecture
 
