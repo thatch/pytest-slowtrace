@@ -141,3 +141,23 @@ def test_xslowtrace_marker_opts_test_out_of_reporting(pytester):
 
     result.stdout.fnmatch_lines(["*slow tests*", "*test_slow_and_idle*"])
     result.stdout.no_fnmatch_line("*test_known_slow_and_idle*")
+
+
+def test_slow_test_report_names_the_function_it_was_waiting_in(pytester):
+    pytester.makepyfile(
+        """
+        import time
+
+        def waiting_on_the_network():
+            time.sleep(0.25)
+
+        def test_slow_and_idle():
+            waiting_on_the_network()
+        """
+    )
+
+    result = pytester.runpytest(
+        "--slowtrace-threshold=0.1", "--slowtrace-idle-threshold=50"
+    )
+
+    result.stdout.fnmatch_lines(["*slow tests*", "*waiting_on_the_network*"])
