@@ -4,18 +4,23 @@ import collections
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
-# How often the background sampler reads the main thread's stack. Short enough
-# to catch a sub-200ms sleep in a couple of ticks, long enough not to spin.
-_SAMPLE_INTERVAL = 0.02
+# How finely to sample a test's stack, relative to the threshold it's judged
+# against: a test right at the threshold still gets a handful of samples, one
+# at 10x the threshold gets ~100. Floored so a very tight --slowtrace-threshold
+# (or a marker override) can't turn the sampler into a busy loop.
+_SAMPLE_INTERVAL_DIVISOR = 10
+_MIN_SAMPLE_INTERVAL = 0.001
 
 
 class SlowTracePlugin:
-    def __init__(self, threshold: float, idle_threshold: float) -> None:
+    def __init__(self, threshold: float, idle_threshold: float, rootdir: Path) -> None:
         self.threshold = threshold
         self.idle_threshold = idle_threshold
+        self.rootdir = rootdir
         self.slow_reports: list[tuple[pytest.TestReport, float | None]] = []
         self.overrides: dict[str, float] = {}
         self.cpu_times: dict[str, float] = {}
@@ -35,20 +40,40 @@ class SlowTracePlugin:
                 seconds = marker.args[0]
             self.overrides[item.nodeid] = seconds
 
+    def _app_frame(self, frame):
+        """Walk outward from `frame` to the first frame under the project's
+        rootdir, skipping over library/stdlib frames along the way.
+
+        A wait buried inside a library (e.g. requests -> urllib3 -> socket)
+        samples as a stdlib-internals line that means nothing without more
+        context; the caller in app code that made the blocking call is the
+        useful line. Falls back to `frame` itself if nothing in the chain
+        lives under rootdir -- the wait might be entirely inside a library.
+        """
+        node = frame
+        while node is not None:
+            if Path(node.f_code.co_filename).is_relative_to(self.rootdir):
+                return node
+            node = node.f_back
+        return frame
+
     @pytest.hookimpl(wrapper=True)
     def pytest_runtest_call(self, item: pytest.Item):
         start = time.process_time()
         samples: list[tuple[str, int, str]] = []
         stop_sampling = threading.Event()
         main_ident = threading.get_ident()
+        threshold = self.overrides.get(item.nodeid, self.threshold)
+        interval = max(_MIN_SAMPLE_INTERVAL, threshold / _SAMPLE_INTERVAL_DIVISOR)
 
         def sample_stacks() -> None:
-            while not stop_sampling.wait(_SAMPLE_INTERVAL):
+            while not stop_sampling.wait(interval):
                 # The sampler starts concurrently with the test resuming on
                 # the main thread, so sys._current_frames() may not have
                 # `main_ident` yet on the very first tick -- skip that tick.
                 frame = sys._current_frames().get(main_ident)
                 if frame is not None:
+                    frame = self._app_frame(frame)
                     samples.append(
                         (frame.f_code.co_filename, frame.f_lineno, frame.f_code.co_name)
                     )
@@ -59,7 +84,7 @@ class SlowTracePlugin:
             return (yield)
         finally:
             stop_sampling.set()
-            sampler.join(timeout=_SAMPLE_INTERVAL * 2)
+            sampler.join(timeout=interval * 2)
             self.cpu_times[item.nodeid] = time.process_time() - start
             self.stack_samples[item.nodeid] = samples
 
@@ -148,5 +173,5 @@ def pytest_configure(config: pytest.Config) -> None:
     threshold = config.getoption("--slowtrace-threshold")
     idle_threshold = config.getoption("--slowtrace-idle-threshold")
     config.pluginmanager.register(
-        SlowTracePlugin(threshold, idle_threshold), "slowtrace-plugin"
+        SlowTracePlugin(threshold, idle_threshold, config.rootpath), "slowtrace-plugin"
     )

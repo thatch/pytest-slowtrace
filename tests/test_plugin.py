@@ -161,3 +161,31 @@ def test_slow_test_report_names_the_function_it_was_waiting_in(pytester):
     )
 
     result.stdout.fnmatch_lines(["*slow tests*", "*waiting_on_the_network*"])
+
+
+def test_stack_summary_prefers_app_frame_over_library_frame(pytester, tmp_path_factory):
+    lib_dir = tmp_path_factory.mktemp("fakelib")
+    (lib_dir / "waitlib.py").write_text(
+        "import time\n"
+        "\n"
+        "def library_internal_wait():\n"
+        "    time.sleep(0.25)\n"
+    )
+
+    pytester.makepyfile(
+        f"""
+        import sys
+        sys.path.insert(0, {str(lib_dir)!r})
+        import waitlib
+
+        def test_calls_into_a_library():
+            waitlib.library_internal_wait()
+        """
+    )
+
+    result = pytester.runpytest(
+        "--slowtrace-threshold=0.1", "--slowtrace-idle-threshold=50"
+    )
+
+    result.stdout.fnmatch_lines(["*slow tests*", "*test_calls_into_a_library*"])
+    result.stdout.no_fnmatch_line("*waitlib.py*")
