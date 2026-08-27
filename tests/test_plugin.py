@@ -163,6 +163,27 @@ def test_slow_test_report_names_the_function_it_was_waiting_in(pytester):
     result.stdout.fnmatch_lines(["*slow tests*", "*waiting_on_the_network*"])
 
 
+def test_report_survives_xdist_worker_controller_split(pytester):
+    pytester.makepyfile(
+        """
+        import time
+
+        def waiting_on_the_network():
+            time.sleep(0.25)
+
+        def test_slow_and_idle():
+            waiting_on_the_network()
+        """
+    )
+
+    result = pytester.runpytest(
+        "-n2", "--slowtrace-threshold=0.1", "--slowtrace-idle-threshold=50"
+    )
+
+    result.stdout.fnmatch_lines(["*slow tests*", "*% cpu*test_slow_and_idle*"])
+    result.stdout.fnmatch_lines(["*waiting_on_the_network*"])
+
+
 def test_stack_summary_prefers_app_frame_over_library_frame(pytester, tmp_path_factory):
     lib_dir = tmp_path_factory.mktemp("fakelib")
     (lib_dir / "waitlib.py").write_text(

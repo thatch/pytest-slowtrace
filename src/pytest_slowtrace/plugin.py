@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -21,11 +22,9 @@ class SlowTracePlugin:
         self.threshold = threshold
         self.idle_threshold = idle_threshold
         self.rootdir = rootdir
-        self.slow_reports: list[tuple[pytest.TestReport, float | None]] = []
+        self.slow_reports: list[pytest.TestReport] = []
         self.overrides: dict[str, float] = {}
-        self.cpu_times: dict[str, float] = {}
         self.skipped: set[str] = set()
-        self.stack_samples: dict[str, list[tuple[str, int, str]]] = {}
 
     def pytest_collection_modifyitems(self, items: list[pytest.Item]) -> None:
         for item in items:
@@ -85,8 +84,28 @@ class SlowTracePlugin:
         finally:
             stop_sampling.set()
             sampler.join(timeout=interval * 2)
-            self.cpu_times[item.nodeid] = time.process_time() - start
-            self.stack_samples[item.nodeid] = samples
+            # Under pytest-xdist, this hook only runs in the worker that
+            # executed the test -- the controller's own SlowTracePlugin
+            # instance never sees it. item.user_properties rides along on
+            # the TestReport (xdist's report_to_serializable/from_serializable
+            # carry it verbatim) so the data reaches pytest_runtest_logreport
+            # wherever that report ends up, worker or controller.
+            item.user_properties.append(
+                ("slowtrace_cpu_time", time.process_time() - start)
+            )
+            if samples:
+                (filename, lineno, function), count = collections.Counter(
+                    samples
+                ).most_common(1)[0]
+                item.user_properties.append(
+                    (
+                        "slowtrace_stack_summary",
+                        (filename, lineno, function, count, len(samples)),
+                    )
+                )
+
+    def _cpu_time(self, report: pytest.TestReport) -> float | None:
+        return cast("float | None", dict(report.user_properties).get("slowtrace_cpu_time"))
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
         if report.when != "call":
@@ -95,9 +114,8 @@ class SlowTracePlugin:
             return
         threshold = self.overrides.get(report.nodeid, self.threshold)
         if report.duration < threshold:
-            self.stack_samples.pop(report.nodeid, None)
             return
-        cpu_time = self.cpu_times.get(report.nodeid)
+        cpu_time = self._cpu_time(report)
         if cpu_time is not None and report.duration > 0:
             # Clamp at 0: clock-resolution jitter between time.process_time()
             # and the wall-clock duration (now compounded by the sampler
@@ -106,37 +124,39 @@ class SlowTracePlugin:
             # negative "idle percentage" for a fully CPU-bound test.
             idle_pct = max(0.0, 100 * (1 - cpu_time / report.duration))
             if idle_pct < self.idle_threshold:
-                self.stack_samples.pop(report.nodeid, None)
                 return
-        self.slow_reports.append((report, cpu_time))
+        self.slow_reports.append(report)
 
-    def _stack_summary(self, nodeid: str) -> str:
+    def _stack_summary(self, report: pytest.TestReport) -> str:
         """Summarize this test's sampled stacks as one clause, or "" if none.
 
         A slow-and-idle test was flagged because it was waiting on something;
-        the most frequently sampled frame is a cheap proxy for "what". This
-        deliberately collapses potentially dozens of samples into a single
-        (filename, lineno, function) so the report stays one line per test.
+        the most frequently sampled frame is a cheap proxy for "what". The
+        summary was already reduced to a single (filename, lineno, function,
+        count, total) in pytest_runtest_call, so there's nothing left to
+        collapse here -- just format it.
         """
-        samples = self.stack_samples.get(nodeid)
-        if not samples:
+        summary = cast(
+            "tuple[str, int, str, int, int] | None",
+            dict(report.user_properties).get("slowtrace_stack_summary"),
+        )
+        if summary is None:
             return ""
-        (filename, lineno, function), count = collections.Counter(samples).most_common(1)[0]
-        return f" -- mostly at {filename}:{lineno} in {function} ({count}/{len(samples)} samples)"
+        filename, lineno, function, count, total = summary
+        return f" -- mostly at {filename}:{lineno} in {function} ({count}/{total} samples)"
 
     def pytest_terminal_summary(self, terminalreporter: pytest.TerminalReporter) -> None:
         if not self.slow_reports:
             return
         terminalreporter.section("slow tests")
-        for report, cpu_time in sorted(
-            self.slow_reports, key=lambda pair: pair[0].duration, reverse=True
-        ):
+        for report in sorted(self.slow_reports, key=lambda r: r.duration, reverse=True):
+            cpu_time = self._cpu_time(report)
             if cpu_time is None:
                 line = f"{report.duration:.2f}s {report.nodeid}"
             else:
                 cpu_pct = 100 * cpu_time / report.duration
                 line = f"{report.duration:.2f}s ({cpu_pct:.0f}% cpu) {report.nodeid}"
-            terminalreporter.write_line(line + self._stack_summary(report.nodeid))
+            terminalreporter.write_line(line + self._stack_summary(report))
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
