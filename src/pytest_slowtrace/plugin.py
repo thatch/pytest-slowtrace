@@ -12,9 +12,12 @@ class SlowTracePlugin:
         self.slow_reports: list[tuple[pytest.TestReport, float | None]] = []
         self.overrides: dict[str, float] = {}
         self.cpu_times: dict[str, float] = {}
+        self.skipped: set[str] = set()
 
     def pytest_collection_modifyitems(self, items: list[pytest.Item]) -> None:
         for item in items:
+            if item.get_closest_marker("xslowtrace") is not None:
+                self.skipped.add(item.nodeid)
             marker = item.get_closest_marker("slowtrace")
             if marker is None:
                 continue
@@ -34,6 +37,8 @@ class SlowTracePlugin:
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
         if report.when != "call":
+            return
+        if report.nodeid in self.skipped:
             return
         threshold = self.overrides.get(report.nodeid, self.threshold)
         if report.duration < threshold:
@@ -87,6 +92,10 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "slowtrace(seconds): report this test as slow if it exceeds `seconds`, "
         "overriding --slowtrace-threshold",
+    )
+    config.addinivalue_line(
+        "markers",
+        "xslowtrace: skip slowtrace reporting for this test entirely",
     )
     threshold = config.getoption("--slowtrace-threshold")
     idle_threshold = config.getoption("--slowtrace-idle-threshold")

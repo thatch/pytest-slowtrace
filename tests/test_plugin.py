@@ -120,3 +120,24 @@ def test_idle_slow_test_is_reported_when_idle_enough(pytester):
     )
 
     result.stdout.fnmatch_lines(["*slow tests*", "*test_slow_and_idle*"])
+
+
+def test_xslowtrace_marker_opts_test_out_of_reporting(pytester):
+    pytester.makepyfile(
+        """
+        import time
+        import pytest
+
+        @pytest.mark.xslowtrace
+        def test_known_slow_and_idle():
+            time.sleep(0.2)
+
+        def test_slow_and_idle():
+            time.sleep(0.2)
+        """
+    )
+
+    result = pytester.runpytest("--slowtrace-threshold=0.1")
+
+    result.stdout.fnmatch_lines(["*slow tests*", "*test_slow_and_idle*"])
+    result.stdout.no_fnmatch_line("*test_known_slow_and_idle*")
