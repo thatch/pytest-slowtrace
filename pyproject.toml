@@ -2,6 +2,7 @@
 name = "pytest-slowtrace"
 version = "0.1.0"
 description = "A pytest plugin that reports what a test was doing when it ran too long"
+readme = "README.md"
 authors = [
     { name = "Tim Hatch", email = "timhatch@netflix.com" }
 ]
