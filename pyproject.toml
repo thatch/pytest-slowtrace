@@ -11,6 +11,10 @@ dependencies = [
     "pytest>=9.1.1",
 ]
 
+[project.urls]
+Homepage = "https://github.com/thatch/pytest-slowtrace"
+Issues = "https://github.com/thatch/pytest-slowtrace/issues"
+
 [project.entry-points.pytest11]
 slowtrace = "pytest_slowtrace.plugin"
 
