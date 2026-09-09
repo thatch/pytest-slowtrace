@@ -212,6 +212,47 @@ def test_stack_summary_prefers_app_frame_over_library_frame(pytester, tmp_path_f
     result.stdout.no_fnmatch_line("*waitlib.py*")
 
 
+def test_marker_override_survives_xdist_worker_controller_split(pytester):
+    # pytest-xdist's controller never runs collection itself, only workers
+    # do, so a marker's effective threshold has to reach the process that
+    # judges the report some way other than a per-instance dict keyed by
+    # nodeid.
+    pytester.makepyfile(
+        """
+        import time
+        import pytest
+
+        @pytest.mark.slowtrace(seconds=0.05)
+        def test_marked_slow():
+            time.sleep(0.15)
+        """
+    )
+
+    result = pytester.runpytest("-n2", "--slowtrace-threshold=5.0")
+
+    result.stdout.fnmatch_lines(["*slow tests*", "*test_marked_slow*"])
+
+
+def test_xslowtrace_marker_survives_xdist_worker_controller_split(pytester):
+    # Same worker/controller split as above: an xslowtrace-marked test's
+    # skip status has to reach the process that judges the report too, or
+    # that process has no way to know the test should be suppressed.
+    pytester.makepyfile(
+        """
+        import time
+        import pytest
+
+        @pytest.mark.xslowtrace
+        def test_known_slow_and_idle():
+            time.sleep(0.2)
+        """
+    )
+
+    result = pytester.runpytest("-n2", "--slowtrace-threshold=0.1")
+
+    assert "slow tests" not in result.stdout.str()
+
+
 def test_app_packages_option_finds_app_frame_even_when_library_lives_under_rootdir(
     pytester,
 ):
