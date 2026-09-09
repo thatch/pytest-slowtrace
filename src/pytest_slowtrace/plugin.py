@@ -4,7 +4,9 @@ import collections
 import sys
 import threading
 import time
+from collections.abc import Generator
 from pathlib import Path
+from types import FrameType
 from typing import cast
 
 import pytest
@@ -55,7 +57,7 @@ class SlowTracePlugin:
             self.overrides[item.nodeid] = seconds
             item.user_properties.append(("slowtrace_threshold", seconds))
 
-    def _app_frame(self, frame):
+    def _app_frame(self, frame: FrameType) -> FrameType:
         """Walk outward from `frame` to the first frame that counts as "app
         code", skipping over library/stdlib frames along the way.
 
@@ -75,7 +77,7 @@ class SlowTracePlugin:
         __name__ (e.g. "urllib3.connectionpool") doesn't depend on where its
         files happen to sit on disk.
         """
-        node = frame
+        node: FrameType | None = frame
         while node is not None:
             if self.app_packages:
                 name = node.f_globals.get("__name__", "")
@@ -87,7 +89,7 @@ class SlowTracePlugin:
         return frame
 
     @pytest.hookimpl(wrapper=True)
-    def pytest_runtest_call(self, item: pytest.Item):
+    def pytest_runtest_call(self, item: pytest.Item) -> Generator[None, object, object]:
         start = time.process_time()
         samples: list[tuple[str, int, str]] = []
         stop_sampling = threading.Event()

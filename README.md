@@ -77,3 +77,15 @@ pytest --slowtrace-app-packages=myapp,myotherapp
 ```
 
 This matches frames by their module name, such as `myapp.worker`, instead of by file path.
+
+## Version compatibility
+
+This library is compatible with Python 3.10+, but should be linted under the newest stable version.
+
+## Versioning
+
+This library follows [meanver](https://meanver.org/), which is like [semver](https://semver.org/) with a promise to rename when the major version changes.
+
+## License
+
+pytest-slowtrace is copyright [Tim Hatch](https://timhatch.com/), and licensed under the MIT license. See the `LICENSE` file for details.
