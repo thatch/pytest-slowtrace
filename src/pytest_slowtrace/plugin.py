@@ -4,7 +4,9 @@ import collections
 import sys
 import threading
 import time
+from collections.abc import Generator
 from pathlib import Path
+from types import FrameType
 from typing import cast
 
 import pytest
@@ -31,12 +33,20 @@ class SlowTracePlugin:
         self.app_packages = app_packages
         self.slow_reports: list[pytest.TestReport] = []
         self.overrides: dict[str, float] = {}
-        self.skipped: set[str] = set()
 
     def pytest_collection_modifyitems(self, items: list[pytest.Item]) -> None:
+        # Recorded onto item.user_properties, not just self.overrides/a
+        # self.skipped set, because under pytest-xdist this hook never runs
+        # on the controller at all (DSession.pytest_collection "prohibit[s]
+        # collection of test items in controller process") -- only workers
+        # collect. pytest_runtest_logreport below runs on whichever process
+        # is judging the report, worker or controller, and user_properties
+        # is what actually survives that trip (see pytest_runtest_call for
+        # the same reasoning applied to cpu_time/stack samples).
         for item in items:
             if item.get_closest_marker("xslowtrace") is not None:
-                self.skipped.add(item.nodeid)
+                item.user_properties.append(("slowtrace_skip", True))
+                continue
             marker = item.get_closest_marker("slowtrace")
             if marker is None:
                 continue
@@ -45,8 +55,9 @@ class SlowTracePlugin:
             else:
                 seconds = marker.args[0]
             self.overrides[item.nodeid] = seconds
+            item.user_properties.append(("slowtrace_threshold", seconds))
 
-    def _app_frame(self, frame):
+    def _app_frame(self, frame: FrameType) -> FrameType:
         """Walk outward from `frame` to the first frame that counts as "app
         code", skipping over library/stdlib frames along the way.
 
@@ -66,7 +77,7 @@ class SlowTracePlugin:
         __name__ (e.g. "urllib3.connectionpool") doesn't depend on where its
         files happen to sit on disk.
         """
-        node = frame
+        node: FrameType | None = frame
         while node is not None:
             if self.app_packages:
                 name = node.f_globals.get("__name__", "")
@@ -78,7 +89,7 @@ class SlowTracePlugin:
         return frame
 
     @pytest.hookimpl(wrapper=True)
-    def pytest_runtest_call(self, item: pytest.Item):
+    def pytest_runtest_call(self, item: pytest.Item) -> Generator[None, object, object]:
         start = time.process_time()
         samples: list[tuple[str, int, str]] = []
         stop_sampling = threading.Event()
@@ -131,9 +142,10 @@ class SlowTracePlugin:
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
         if report.when != "call":
             return
-        if report.nodeid in self.skipped:
+        props = dict(report.user_properties)
+        if props.get("slowtrace_skip", False):
             return
-        threshold = self.overrides.get(report.nodeid, self.threshold)
+        threshold = cast("float", props.get("slowtrace_threshold", self.threshold))
         if report.duration < threshold:
             return
         cpu_time = self._cpu_time(report)
