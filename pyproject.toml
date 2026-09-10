@@ -73,7 +73,11 @@ show_missing = true
 skip_covered = true
 
 [tool.pytest.ini_options]
-addopts = "-ra"
+# Every test here drives a real pytest subprocess via the `pytester` fixture,
+# so they're all slow and idle by nature -- that's expected cost, not a wait
+# worth investigating. The default 0.2s threshold would flag all of them on
+# every run, drowning out any test that's slow for an actual new reason.
+addopts = "-ra --slowtrace-threshold=2.0"
 testpaths = ["tests"]
 
 [tool.mypy]
